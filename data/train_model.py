@@ -7,7 +7,7 @@ import warnings
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report
 from sklearn.pipeline import Pipeline
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
@@ -60,7 +60,27 @@ def main():
     X_clean = X.apply(preprocess_text)
     mask = X_clean.str.len() > 0
     X_clean, y = X_clean[mask], y[mask]
-    print(f"{len(X_clean)} records ready.\n")
+    print(f"{len(X_clean)} records ready.")
+
+    # Load & split internal MIF verified records (70% train, 30% test)
+    X_int_test, y_int_test = pd.Series(dtype=str), pd.Series(dtype=str)
+    test_path = BASE_DIR / "processed" / "test_set_internal.csv"
+    if test_path.exists():
+        df_internal = pd.read_csv(test_path, sep=";", dtype=str).dropna(subset=["job_text_raw", "label"])
+        df_int_train, df_int_test = train_test_split(
+            df_internal, test_size=0.30, stratify=df_internal["label"], random_state=42
+        )
+        X_int_train = df_int_train["job_text_raw"].apply(preprocess_text)
+        y_int_train = df_int_train["label"].reset_index(drop=True)
+        X_int_test = df_int_test["job_text_raw"].apply(preprocess_text).reset_index(drop=True)
+        y_int_test = df_int_test["label"].reset_index(drop=True)
+
+        X_clean = pd.concat([X_clean, X_int_train], ignore_index=True)
+        y = pd.concat([y, y_int_train], ignore_index=True)
+        print(f"+ {len(X_int_train)} internal MIF records ditambahkan ke training")
+        print(f"  Hold-out test: {len(X_int_test)} records (verified labels)\n")
+    else:
+        print("\n⚠️  test_set_internal.csv tidak ditemukan. Jalankan prepare_corpus.py terlebih dahulu.\n")
 
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     fold_metrics = []
@@ -98,12 +118,12 @@ def main():
     ])
     final_model.fit(X_clean, y)
 
-    test_internal = pd.read_csv(CORPUS_FILE, sep=";")
-    test_internal = test_internal[test_internal["source"] == "internal_mif"].dropna(subset=["job_text_raw", "label"])
-    y_true = test_internal["label"]
-    y_pred = final_model.predict(test_internal["job_text_raw"].apply(preprocess_text))
-    print("INTERNAL HOLD-OUT METRICS:")
-    print(classification_report(y_true, y_pred, zero_division=0))
+    if len(y_int_test) > 0:
+        y_pred = final_model.predict(X_int_test)
+        print("\nHOLD-OUT TEST SET (Internal MIF - 30% split, label terverifikasi):")
+        print(classification_report(y_int_test, y_pred, zero_division=0))
+    else:
+        print("\n⚠️  Tidak ada hold-out test set.")
 
     model_path = ML_DIR / "ml_pipeline.pkl"
     joblib.dump(final_model, model_path)

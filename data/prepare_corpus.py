@@ -21,6 +21,14 @@ ENCODING = "utf-8-sig"
 
 TARGET_CLASSES = ["Programmer", "Data Analyst", "Wirausaha Informatika", "Non-IT"]
 
+KLASIFIKASI_MAP = {
+    "Programmer"  : "Programmer",
+    "Data Analyst": "Data Analyst",
+    "Wirausaha"   : "Wirausaha Informatika",
+    "Wirausaha IT": "Wirausaha Informatika",
+    "Non IT"      : "Non-IT",
+}
+
 KEYWORD_RULES = {
     "Programmer": [
         "programmer", "developer", "engineer", "fullstack", "backend", "frontend",
@@ -147,6 +155,7 @@ def process_internal_mif(file_path: Path) -> pd.DataFrame:
     col_jabatan = find_col(df, ["jabatan", "posisi"])
     col_perusahaan = find_col(df, ["nama", "perusahaan"])
     col_deskripsi = find_col(df, ["deskripsi", "perusahaan"])
+    col_klasifikasi = find_col(df, ["klasifikasi"])
     
     if not all([col_nim, col_jabatan]):
         print("  Missing critical columns (nim/jabatan) in Internal MIF")
@@ -165,11 +174,22 @@ def process_internal_mif(file_path: Path) -> pd.DataFrame:
     
     df["source"] = "internal_mif"
     
-    result = df[[col_nim, col_nama, col_tahun, "job_text_raw", "source"]].rename(columns={
-        col_nim: "nim", col_nama: "nama", col_tahun: "tahun_lulus"
-    }).dropna(subset=["nim"]).drop_duplicates(subset=["nim"], keep="first")
-    
-    print(f"  Loaded {len(result)} records from Internal MIF")
+    cols = [col_nim, col_nama, col_tahun, "job_text_raw", "source"]
+    rename_map = {col_nim: "nim", col_nama: "nama", col_tahun: "tahun_lulus"}
+
+    if col_klasifikasi:
+        cols.append(col_klasifikasi)
+        rename_map[col_klasifikasi] = "klasifikasi_raw"
+
+    result = df[cols].rename(columns=rename_map).dropna(subset=["nim"]).drop_duplicates(subset=["nim"], keep="first")
+
+    if "klasifikasi_raw" in result.columns:
+        result["label_verified"] = result["klasifikasi_raw"].map(KLASIFIKASI_MAP)
+        result = result.drop(columns=["klasifikasi_raw"])
+        verified_count = result["label_verified"].notna().sum()
+        print(f"  {verified_count} records dengan label terverifikasi → akan dijadikan test set")
+
+    print(f"  ✅ Loaded {len(result)} records from Internal MIF")
     return result
 
 def process_kemendik(file_path: Path) -> pd.DataFrame:
@@ -270,12 +290,25 @@ def main():
     df_kem = process_kemendik(FILE_KEMENDIK)
     df_job = process_jobstreet_kaggle(FILE_JOBSTREET)
 
-    dfs = [df for df in [df_int, df_kem, df_job] if not df.empty]
+    # Export test set dari internal_mif SEBELUM masuk training
+    if not df_int.empty and "label_verified" in df_int.columns:
+        df_test = df_int[df_int["label_verified"].notna()].copy()
+        df_test = df_test.rename(columns={"label_verified": "label"})
+        test_output = OUTPUT_DIR / "test_set_internal.csv"
+        cols_test = ["nim", "nama", "tahun_lulus", "job_text_raw", "label", "source"]
+        df_test[cols_test].to_csv(test_output, index=False, sep=";", encoding=ENCODING)
+        dist_test = df_test["label"].value_counts()
+        print(f"\n📋 TEST SET TERSIMPAN: {len(df_test)} records → test_set_internal.csv")
+        for cls in TARGET_CLASSES:
+            print(f"  {cls:25} : {dist_test.get(cls, 0)}")
+
+    # Training hanya dari kemendik + jobstreet (internal_mif TIDAK masuk training)
+    dfs = [df for df in [df_kem, df_job] if not df.empty]
     if not dfs:
         print("No data loaded. Check file paths and column names.")
         sys.exit(1)
 
-    print(f"\n[4/4] Merging & processing {len(dfs)} sources...")
+    print(f"\n[4/4] Merging & processing {len(dfs)} sources (training only)...")
     df_combined = pd.concat(dfs, ignore_index=True)
 
     df_combined = df_combined.sort_values('source', key=lambda x: x.map({'internal_mif': 0, 'kemendik': 1, 'jobstreet_kaggle': 2}))
