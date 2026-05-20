@@ -29,3 +29,4 @@ venv/
 __pycache__/
 *.pyc
 data/external/jobs_crawling/mergeFile.csv
+data/external/jobs_crawling/mergeFile_2.csv
